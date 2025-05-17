@@ -359,3 +359,241 @@ You should also be able to see the received packet in the Wireshark.
 DPDK provides `testpmd` utility for testing and benchmarking packet processing capabilities. It stands for "Test Packet Management Daemon", and allows users to send, receive, and manipulate packets to test the performance and functionality of DPDK-enabled network interfaces and applications.
 
 TODO
+
+## Vector Packet Processing (VPP)
+
+VPP relies on DPDK for packet I/O operations. DPDK provides a set of libraries and drivers that allow for fast packet processing in user space, bypassing the kernel to minimize latency and maximize throughput. VPP leverages these capabilities to achieve high-speed packet handling. DPDK handles the reception of packets from the NIC, placing them into memory buffers that VPP can then process. After processing, VPP uses DPDK to transmit packets back through the NIC.
+
+We are going to use the same topology above to setup VPP. TGN VM generates packets/traffic and DPDK VM is running VPP/DPDK and forwards the traffic.
+
+**Installing VPP on DPDK VM**
+
+You can follow the instructions in [here](https://s3-docs.fd.io/vpp/22.02/gettingstarted/installing/ubuntu.html) to install the latest release of VPP on Ubuntu 20.04.6 LTS. You can also install VPP from source. We are going to take the latter approach and install VPP from source.
+
+In the DPDK VM, clone the VPP git repository:
+
+```bash
+git clone https://github.com/FDio/vpp
+```
+
+Go to the project base directory:
+
+```bash
+cd vpp
+```
+
+Install VPP dependencies:
+
+```bash
+make UNATTENDED=yes install-dep
+```
+
+Build VPP Debian packages:
+
+```bash
+make pkg-deb
+```
+
+Go to the build-root folder and list all the Debian files:
+
+```bash
+cd build-root
+ls *.deb
+```
+
+And finally install those by:
+
+```bash
+sudo dpkg -i *.deb
+```
+
+Make sure the VPP service is up and running:
+
+```bash
+systemctl status vpp
+```
+
+Install the `igb-uio-dkms` kernel module:
+
+```bash
+sudo apt install dpdk-igb-uio-dkms
+```
+
+`igb-uio-dkms` is a DKMS-packaged kernel module that provides the IGB UIO (Userspace I/O) driver for use with DPDK. It offers a dedicated, high-performance UIO-based driver for Intel network interfaces, enabling direct user-space access to PCIe NICs with support for interrupt handling and memory mapping. This module is preferred over `uio_pci_generic` for Intel devices requiring enhanced features or better compatibility within DPDK environments.
+
+Optionally, you can run VPP test, which might take some time:
+
+```bash
+make test
+```
+
+**Binding Interfaces to DPDK**
+
+Load the igb_uio kernel:
+
+```bash
+sudo modprobe igb_uio
+```
+
+List the network interfaces:
+
+```bash
+dpdk-devbind.py --status
+```
+
+Bind `enp0s9` and `enp0s10` interfaces to DPDK:
+
+```bash
+sudo dpdk-devbind.py --bind=igb_uio 0000:00:09.0
+sudo dpdk-devbind.py --bind=igb_uio 0000:00:0a.0
+```
+
+Check the interface binding status one more time.
+
+**Map Interfaces in VPP**
+
+`vppctl` is the command-line interface tool for interacting with VPP. It allows users to manage, configure, and monitor VPP instances. With vppctl, administrators and users can execute a variety of commands to control and query the state of VPP.
+
+```bash
+sudo vppctl
+vpp#
+```
+
+You can invoke help to print a list of commands.
+
+```bash
+vpp# help
+```
+
+The `vppctl show interface` command is used to display information about the network interfaces that are configured and managed by VPP. The list is empty.
+
+```bash
+vpp# show interface
+
+Name     Idx    State  MTU  (L3/IP4/IP6/MPLS)     Counter       Count
+local0    0     down            0/0/0/0
+```
+
+Open the VPP startup configuration file:
+
+```bash
+sudo nano /etc/vpp/startup.conf
+```
+
+And append these:
+
+```text
+dpdk {
+dev 0000:00:09.0
+dev 0000:00:0a.0
+}
+```
+
+Save and close the file and restart the VPP service.
+
+```bash
+sudo systemctl restart vpp
+```
+
+Now connect to the VPP control interface using `vppctl`:
+
+```bash
+sudo vppctl
+```
+
+If you encounter a "connection refused" error, allow a few moments for the VPP service to fully initialize before retrying.
+
+Invoke `show interface`:
+
+```bash
+vpp# show interface
+
+    Name              Idx    State  MTU (L3/IP4/IP6/MPLS)     Counter          Count
+GigabitEthernet0/9/0   1     down          9000/0/0/0
+GigabitEthernet0/a/0   2     down          9000/0/0/0
+local0                 0     down           0/0/0/0
+```
+
+Set the interface state to UP.
+
+```bash
+vpp# set interface state GigabitEthernet0/9/0 up
+vpp# set interface state GigabitEthernet0/a/0 up
+```
+
+**Ping VPP Interfaces**
+
+From the DPDK/VPP VM, we are going to assign IPv4 address to both interfaces.
+
+```bash
+vpp# set interface ip address GigabitEthernet0/9/0 10.10.10.1/24
+vpp# set interface ip address GigabitEthernet0/a/0 20.20.20.1/24
+```
+
+From the TGEN VM, we are going to assign IPv4 address to `enp0s9` and `enp0s10`:
+
+```bash
+ifconfig enp0s9 10.10.10.2 netmask 255.255.255.0
+ifconfig enp0s10 20.20.20.2 netmask 255.255.255.0
+```
+
+Ping the VPP interfaces from TGEN VM.
+
+```bash
+ping 10.10.10.1
+ping 20.20.20.1
+```
+
+In the DPDK/VPP VM, invoke `show interface` and observe the "Count" column.
+
+Clear the statistics for all interfaces:
+
+```bash
+vpp# clear interfaces
+```
+
+**Packet Tracing**
+
+From the DPDK/VPP VM, we are going to enable packet tracing.
+
+```bash
+vpp# trace add dpdk-input 10
+```
+
+Ping the VPP interfaces from TGEN VM like before, and from the DPDK/VPP VM, display the traces.
+
+```bash
+vpp# show trace
+```
+
+Clear the statistics for all interfaces:
+
+```bash
+vpp# clear interfaces
+```
+
+**Run Traffic**
+
+Go to the TGN VM, and invoke the scapy Python script:
+
+```bash
+sudo python3 traffic_vpp.py
+```
+
+You will see that the DPDK/VPP receives and then forward the traffic back to the TGEN VM.
+
+```bash
+pp# show interface
+
+              Name            Idx    State   MTU (L3/IP4/IP6/MPLS)    Counter          Count
+GigabitEthernet0/9/0           1      up          9000/0/0/0         rx packets                 1
+                                                                     rx bytes                  60
+                                                                     ip4                        1
+GigabitEthernet0/a/0           2      up          9000/0/0/0         tx packets                 1
+                                                                     tx bytes                  60
+local0                         0     down          0/0/0/0
+```
+
+Using Wireshark, you can capture the received packet on `enp0s10` of TGEN VM.
+
+<img src="pics/vpp_wireshark.jpg" alt="segment" width="600">
