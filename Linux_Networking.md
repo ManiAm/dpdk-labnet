@@ -1,4 +1,4 @@
-# Linux Networking 101
+# Linux Networking
 
 ## Network Interface Controller (NIC)
 
@@ -26,11 +26,9 @@ In many network driver implementations, there are separate packet buffer pools f
 
 Separate pools allow for specialized handling and optimization of RX and TX traffic. For instance, receive buffers can be optimized for fast write operations by the NIC, while transmit buffers can be optimized for fast read operations. The NIC and driver can handle incoming and outgoing traffic independently, reducing contention and improving performance. Finally, memory allocation and deallocation can be tailored for the different characteristics of RX and TX traffic. For example, RX buffers might be continuously reused for incoming traffic, while TX buffers might be allocated and freed more dynamically based on the outgoing traffic load.
 
-We will focus on the RX path in the remaining of our discussions.
-
 ## Packet Descriptors
 
-A packet descriptor is a data structure used by network interface cards to manage packet processing. As the name suggests, a descriptor describes a packet—it does not contain the packet data itself. Instead, it provides metadata about the packet and a reference (usually a pointer) to a memory buffer that holds the actual packet contents. The structure of a packet descriptor can vary depending on the specific hardware and driver implementation. Each descriptor typically includes information such as:
+A packet descriptor is a data structure used by network interface cards to manage packet processing. As the name suggests, a descriptor describes a packet. It does not contain the packet data itself. Instead, it provides metadata about the packet and a reference (usually a pointer) to a memory buffer that holds the actual packet contents. The structure of a packet descriptor can vary depending on the specific hardware and driver implementation. Each descriptor typically includes information such as:
 
 - The DMA address of the packet buffer, enabling direct memory access by the NIC.
 - The length of the packet.
@@ -54,7 +52,7 @@ struct packet_descriptor {
 
 A ring buffer is a fixed-size circular array of packet descriptors used for efficient packet transmission and reception. During the initialization of a network interface, the NIC driver allocates the ring buffer in system memory (RAM), typically using kernel memory allocation functions such as `kmalloc` or `alloc_pages`.
 
-To enable high-speed data transfer, the driver sets up Direct Memory Access (DMA), which allows the NIC to access system memory directly—bypassing the CPU—to read and write packet data. This significantly reduces processing overhead and improves throughput. The ring buffer is managed using three key pointers:
+To enable high-speed data transfer, the driver sets up Direct Memory Access (DMA), which allows the NIC to access system memory directly (bypassing the CPU) to read and write packet data. This significantly reduces processing overhead and improves throughput. The ring buffer is managed using three key pointers:
 
 - **Base Pointer**: Points to the start of the ring buffer in memory. It is set during initialization and remains constant, serving as the fixed reference point for the descriptor array.
 
@@ -63,54 +61,6 @@ To enable high-speed data transfer, the driver sets up Direct Memory Access (DMA
 - **Tail Pointer**: Managed by the NIC driver (software), it indicates the last buffer that has been prepared and made available to the NIC for future packet reception. Updating the tail informs the NIC that more space is available.
 
 This coordinated movement of head and tail pointers allows efficient and continuous packet processing in a circular fashion, where descriptors are reused once they have been processed.
-
-## Packet Reception Flow
-
-<img src="pics/ring_buffer.png" alt="segment" width="750">
-
-1. **Packet Arrival on the Wire**:
-
-    A network frame (e.g., Ethernet frame) arrives at the NIC via the physical network medium (e.g., Ethernet cable). The NIC detects the start of the frame using its hardware circuitry and begins capturing bits.
-
-2. **Frame Reception and Parsing**:
-
-    The NIC receives the entire frame, validates the Frame Check Sequence (FCS) (e.g., CRC check). If the frame is malformed or fails CRC, it may be dropped or marked as an error.
-
-3. **Select a Free Descriptor in the Ring Buffer**:
-
-    The NIC uses the head pointer to find the next available descriptor and its associated buffer (e.g. `buf[3]`) from the ring buffer in RAM.
-
-4. **DMA Transfer to Packet Buffer**:
-
-    The descriptor contains a DMA address pointing to a pre-allocated memory buffer. The NIC performs a DMA transfer, copying the received packet directly into that buffer in system RAM—without CPU involvement. This transfer is done using the physical address previously provided by the driver.
-
-5. **Descriptor Update by NIC**:
-
-    After the DMA completes, the length field in the descriptor is updated with the size of the received packet. The status is updated to reflect successful reception (e.g., ownership flag changes from NIC to CPU, and flags like “End of Packet” or “Checksum OK” may be set).
-
-6. **NIC Advances Head Pointer**:
-
-    The NIC updates the head pointer to point to the next descriptor in the ring, preparing to receive the next packet.
-
-7. **Notification to Host**:
-
-    The NIC generates a hardware interrupt to notify the host that one or more packets have been received. If case of polling-based (NAPI in Linux) approach, the driver periodically checks the ring buffer in a more efficient way to reduce interrupt overhead at high packet rates.
-
-8. **Driver Processes the Descriptor**:
-
-    The NIC driver reads the updated descriptor and validates status/error flags. It then retrieves the buffer address and packet length. It may also perform additional tasks such as checksum validation, time-stamping, VLAN tagging, etc.
-
-9. **Packet is Handed to the Kernel Network Stack**:
-
-    The driver passes the packet up to the Linux kernel networking stack. It may wrap the packet in a `sk_buff` structure. This structure is then passed through protocol layers (Ethernet → IP → TCP/UDP).
-
-10. **User-Space Delivery**:
-
-    After protocol processing, the packet is ultimately delivered to the appropriate socket buffer of a user-space application, such as a web server, DNS resolver, or containerized service.
-
-11. **Descriptor Recycled**:
-
-    The driver marks the descriptor as "available". It sets the ownership back to the NIC. It also updates the tail pointer so the NIC knows it can reuse this buffer for future packets.
 
 ## Ring Buffer Size
 
@@ -144,11 +94,61 @@ Pre-set maximums indicate the maximum ring buffer sizes that the hardware can su
 
 Also note that we have only one ring buffer for TX. The TX ring buffer handles outgoing packets that are to be transmitted onto the network. Since the driver and application control the packet sizes and manage the preparation of outgoing packets, a single TX ring buffer is typically sufficient. The TX ring buffer can handle packets of various sizes without needing separate buffers, as the driver can prepare packets of appropriate sizes before enqueueing them for transmission.
 
+## Packet Reception Flow
+
+<img src="pics/ring_buffer.png" alt="segment" width="750">
+
+1. **Packet Arrival on the Wire**:
+
+    A network frame (e.g., Ethernet frame) arrives at the NIC via the physical network medium (e.g., Ethernet cable). The NIC detects the start of the frame using its hardware circuitry and begins capturing bits.
+
+2. **Frame Reception and Parsing**:
+
+    The NIC receives the entire frame, validates the Frame Check Sequence (FCS) (e.g., CRC check). If the frame is malformed or fails CRC, it may be dropped or marked as an error.
+
+3. **Select a Free Descriptor in the Ring Buffer**:
+
+    The NIC uses the head pointer to find the next available descriptor and its associated buffer (e.g. `buf[3]`) from the ring buffer in RAM.
+
+4. **DMA Transfer to Packet Buffer**:
+
+    The descriptor contains a DMA address pointing to a pre-allocated memory buffer. The NIC performs a DMA transfer, copying the received packet directly into that buffer in system RAM without CPU involvement. This transfer is done using the physical address previously provided by the driver.
+
+5. **Descriptor Update by NIC**:
+
+    After the DMA completes, the length field in the descriptor is updated with the size of the received packet. The status is updated to reflect successful reception (e.g., ownership flag changes from NIC to CPU, and flags like "End of Packet" or "Checksum OK" may be set).
+
+6. **NIC Advances Head Pointer**:
+
+    The NIC updates the head pointer to point to the next descriptor in the ring, preparing to receive the next packet.
+
+7. **Notification to Host**:
+
+    The NIC generates a hardware interrupt to notify the host that one or more packets have been received. In case of polling-based (NAPI in Linux) approach, the driver periodically checks the ring buffer in a more efficient way to reduce interrupt overhead at high packet rates.
+
+8. **Driver Processes the Descriptor**:
+
+    The NIC driver reads the updated descriptor and validates status/error flags. It then retrieves the buffer address and packet length. It may also perform additional tasks such as checksum validation, time-stamping, VLAN tagging, etc.
+
+9. **Packet is Handed to the Kernel Network Stack**:
+
+    The driver passes the packet up to the Linux kernel networking stack. It may wrap the packet in a `sk_buff` structure. This structure is then passed through protocol layers (Ethernet → IP → TCP/UDP).
+
+10. **User-Space Delivery**:
+
+    After protocol processing, the packet is ultimately delivered to the appropriate socket buffer of a user-space application, such as a web server, DNS resolver, or containerized service.
+
+11. **Descriptor Recycled**:
+
+    The driver marks the descriptor as "available". It sets the ownership back to the NIC. It also updates the tail pointer so the NIC knows it can reuse this buffer for future packets.
+
 ## Hardware Interrupts
 
-To recall what we have learnt so far: When a packet arrives at the NIC, it is temporarily stored in the NIC's internal buffers. These buffers are small, fast memory areas on the NIC itself, designed to handle the high speed of incoming network traffic. The NIC uses a descriptor from the ring buffer to determine where to copy the incoming packet data. The NIC uses DMA to copy the packet data from its internal buffers to the memory buffer indicated by the descriptor in the ring buffer. DMA allows data to be transferred directly between the NIC and system memory without involving the CPU, which increases efficiency.
+To recall what we have learnt so far:
 
-The packet data is now stored in one of the buffers in the packet buffer pool. The NIC updates the status of the descriptor in the ring buffer and generates a (hardware) `interrupt` to notify the CPU. This interrupt signals the CPU to take action on the newly received packet. The NIC driver, which is part of the operating system, has an interrupt handler that is triggered by the NIC's interrupt. This handler is a piece of code that executes in response to the interrupt. The interrupt handler processes the descriptors in the ring buffer, retrieves the packet data from the packet buffer pool, and performs any necessary actions to prepare the packet for further processing.
+> When a packet arrives at the NIC, it is temporarily stored in the NIC's internal buffers. These buffers are small, fast memory areas on the NIC itself, designed to handle the high speed of incoming network traffic. The NIC uses a descriptor from the ring buffer to determine where to copy the incoming packet data. The NIC uses DMA to copy the packet data from its internal buffers to the memory buffer indicated by the descriptor in the ring buffer. DMA allows data to be transferred directly between the NIC and system memory without involving the CPU, which increases efficiency.
+
+The packet data is now stored in one of the buffers in the packet buffer pool. The NIC updates the status of the descriptor in the ring buffer and generates a "hardware interrupt" to notify the CPU. This interrupt signals the CPU to take action on the newly received packet. The NIC driver, which is part of the operating system, has an interrupt handler that is triggered by the NIC's interrupt. This handler is a piece of code that executes in response to the interrupt. The interrupt handler processes the descriptors in the ring buffer, retrieves the packet data from the packet buffer pool, and performs any necessary actions to prepare the packet for further processing.
 
 ### Hardware Interrupt Moderation
 
@@ -164,7 +164,7 @@ Once the SKB is allocated and initialized, the NIC driver’s interrupt handler 
 
 ## Software Interrupts
 
-After the NIC driver has handed off the SKB to the network stack, the processing required at each layer (such as routing decisions at the IP layer or checksum verification at the TCP layer) can be performed by `software interrupts`. These interrupts, often implemented as `softirqs` or `tasklets` in the Linux kernel, are used to defer processing to a context outside of the interrupt handler, thereby improving system responsiveness and ensuring that high-priority tasks are not unduly delayed.
+After the NIC driver has handed off the SKB to the network stack, the processing required at each layer (such as routing decisions at the IP layer or checksum verification at the TCP layer) can be performed by "software interrupts". These interrupts, often implemented as `softirqs` or `tasklets` in the Linux kernel, are used to defer processing to a context outside of the interrupt handler, thereby improving system responsiveness and ensuring that high-priority tasks are not unduly delayed.
 
 This mechanism helps maintain a balance between processing incoming packets promptly and ensuring that the CPU is not overwhelmed by interrupt handling duties. By using software interrupts, the network stack can perform necessary operations like protocol processing, packet forwarding, and delivering data to the appropriate sockets without stalling the entire system. Ultimately, this allows for smoother and more efficient handling of network traffic, ensuring that both high-priority and routine tasks are managed effectively within the kernel.
 
